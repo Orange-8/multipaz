@@ -1,0 +1,136 @@
+# Produces UNSIGNED artifacts (CODE_SIGNING_ALLOWED=NO); re-sign the .ipa before installing it on a device.
+name: Build iOS TestApp
+
+on:
+  workflow_dispatch:
+    inputs:
+      sdk:
+        description: "iphoneos = device (unsigned .ipa), iphonesimulator = simulator (.app.zip)"
+        type: choice
+        options:
+          - iphoneos
+          - iphonesimulator
+        default: iphoneos
+      configuration:
+        description: "Xcode build configuration (also selects the Kotlin build type)"
+        type: choice
+        options:
+          - Debug
+          - Release
+        default: Debug
+  push:
+    paths:
+      - ".github/workflows/build-ios-testapp.yml"
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    name: Build ${{ inputs.sdk || 'iphoneos' }} (${{ inputs.configuration || 'Debug' }})
+    runs-on: macos-26
+    timeout-minutes: 120
+    env:
+      SDK: ${{ inputs.sdk || 'iphoneos' }}
+      CONFIGURATION: ${{ inputs.configuration || 'Debug' }}
+      # Version recommended in DEVELOPER-ENVIRONMENT.md; the image default is used if it is missing.
+      XCODE_VERSION: "26.1.1"
+      IOS_APP_DIR: samples/testapp/iosApp
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v7
+        with:
+          # build.gradle.kts derives versionCode from the commit count.
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+
+      - name: Cache Kotlin/Native toolchain
+        uses: actions/cache@v6
+        with:
+          path: ~/.konan
+          key: konan-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('gradle/libs.versions.toml') }}
+          restore-keys: konan-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Select Xcode
+        run: |
+          app="/Applications/Xcode_${XCODE_VERSION}.app"
+          if [ -d "$app" ]; then
+            sudo xcode-select -s "$app"
+          else
+            echo "::warning::$app not found, using the default Xcode"
+          fi
+          xcodebuild -version
+
+      - name: Prepare
+        run: |
+          chmod +x gradlew
+          [ -f "$IOS_APP_DIR/DeveloperConfig.xcconfig" ] || \
+            cp "$IOS_APP_DIR/DeveloperConfig.xcconfig.template" "$IOS_APP_DIR/DeveloperConfig.xcconfig"
+
+      # The "Compile Kotlin Framework" build phase runs Gradle (embedAndSignAppleFrameworkForXcode).
+      - name: Build
+        run: |
+          case "$SDK" in
+            iphoneos) destination="generic/platform=iOS" ;;
+            *) destination="generic/platform=iOS Simulator" ;;
+          esac
+          xcodebuild -list -project "$IOS_APP_DIR/TestApp.xcodeproj" || true
+          xcodebuild build \
+            -project "$IOS_APP_DIR/TestApp.xcodeproj" \
+            -scheme TestApp \
+            -configuration "$CONFIGURATION" \
+            -sdk "$SDK" \
+            -destination "$destination" \
+            -derivedDataPath build/xcode-derived-data \
+            ARCHS=arm64 \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            COMPILER_INDEX_STORE_ENABLE=NO \
+            2>&1 | tee xcodebuild.log | xcbeautify --renderer github-actions
+
+      - name: Package
+        run: |
+          shopt -s nullglob
+          products="build/xcode-derived-data/Build/Products/${CONFIGURATION}-${SDK}"
+          apps=("$products"/*.app)
+          if [ "${#apps[@]}" -eq 0 ]; then
+            echo "::error::No .app found in $products"
+            ls -la "$products" || true
+            exit 1
+          fi
+          mkdir dist
+          if [ "$SDK" = "iphoneos" ]; then
+            mkdir dist/Payload
+            cp -R "${apps[0]}" dist/Payload/
+            (cd dist && zip -qry "TestApp-${CONFIGURATION}-unsigned.ipa" Payload && rm -rf Payload)
+          else
+            ditto -c -k --keepParent "${apps[0]}" "dist/TestApp-${CONFIGURATION}-simulator.app.zip"
+          fi
+          ls -lh dist
+
+      - name: Upload app
+        uses: actions/upload-artifact@v7
+        with:
+          name: TestApp-${{ env.SDK }}-${{ env.CONFIGURATION }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: xcodebuild-log-${{ env.SDK }}-${{ env.CONFIGURATION }}
+          path: xcodebuild.log
+          if-no-files-found: ignore
+          retention-days: 7
