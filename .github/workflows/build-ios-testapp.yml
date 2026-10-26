@@ -40,6 +40,9 @@ jobs:
       # Empty = image default; Xcode 26.0.1/26.1.1 lack their iOS platform there (runner-images#14146).
       XCODE_VERSION: ""
       IOS_APP_DIR: samples/testapp/iosApp
+      # Override with repository variables once the app is signed with your own Apple Developer account.
+      LOCAL_BUNDLE_ID: ${{ vars.LOCAL_BUNDLE_ID || 'org.multipaz.testapp' }}
+      APP_GROUP_ID: ${{ vars.APP_GROUP_ID || 'group.org.multipaz.testapp.sharedgroup' }}
     steps:
       - name: Check out code
         uses: actions/checkout@v7
@@ -48,11 +51,15 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
-      - name: Set up JDK 17
+      # build.gradle.kts runs `git rev-list <projectVersionLast>..`, and forks do not carry upstream's release tags.
+      - name: Fetch upstream tags
+        run: git fetch --no-tags https://github.com/openwallet-foundation/multipaz.git '+refs/tags/*:refs/tags/*'
+
+      - name: Set up JDK 21
         uses: actions/setup-java@v6
         with:
           distribution: temurin
-          java-version: "17"
+          java-version: "21"
           cache: gradle
 
       - name: Cache Kotlin/Native toolchain
@@ -72,8 +79,12 @@ jobs:
       - name: Prepare
         run: |
           chmod +x gradlew
-          [ -f "$IOS_APP_DIR/DeveloperConfig.xcconfig" ] || \
-            cp "$IOS_APP_DIR/DeveloperConfig.xcconfig.template" "$IOS_APP_DIR/DeveloperConfig.xcconfig"
+          echo "sdk.dir=$ANDROID_HOME" > local.properties
+          printf '%s\n' \
+            "DEVELOPMENT_TEAM =" \
+            "LOCAL_BUNDLE_ID = $LOCAL_BUNDLE_ID" \
+            "APP_GROUP_ID = $APP_GROUP_ID" \
+            > "$IOS_APP_DIR/DeveloperConfig.xcconfig"
 
       # The "Compile Kotlin Framework" build phase runs Gradle (embedAndSignAppleFrameworkForXcode).
       - name: Build
