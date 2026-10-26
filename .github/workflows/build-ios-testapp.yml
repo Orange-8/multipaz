@@ -37,8 +37,8 @@ jobs:
     env:
       SDK: ${{ inputs.sdk || 'iphoneos' }}
       CONFIGURATION: ${{ inputs.configuration || 'Debug' }}
-      # Version recommended in DEVELOPER-ENVIRONMENT.md; the image default is used if it is missing.
-      XCODE_VERSION: "26.1.1"
+      # Empty = image default; Xcode 26.0.1/26.1.1 lack their iOS platform there (runner-images#14146).
+      XCODE_VERSION: ""
       IOS_APP_DIR: samples/testapp/iosApp
     steps:
       - name: Check out code
@@ -64,11 +64,8 @@ jobs:
 
       - name: Select Xcode
         run: |
-          app="/Applications/Xcode_${XCODE_VERSION}.app"
-          if [ -d "$app" ]; then
-            sudo xcode-select -s "$app"
-          else
-            echo "::warning::$app not found, using the default Xcode"
+          if [ -n "$XCODE_VERSION" ]; then
+            sudo xcode-select -s "/Applications/Xcode_${XCODE_VERSION}.app"
           fi
           xcodebuild -version
 
@@ -85,7 +82,6 @@ jobs:
             iphoneos) destination="generic/platform=iOS" ;;
             *) destination="generic/platform=iOS Simulator" ;;
           esac
-          xcodebuild -list -project "$IOS_APP_DIR/TestApp.xcodeproj" || true
           xcodebuild build \
             -project "$IOS_APP_DIR/TestApp.xcodeproj" \
             -scheme TestApp \
@@ -95,8 +91,7 @@ jobs:
             -derivedDataPath build/xcode-derived-data \
             ARCHS=arm64 \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
-            COMPILER_INDEX_STORE_ENABLE=NO \
-            2>&1 | tee xcodebuild.log | xcbeautify --renderer github-actions
+            COMPILER_INDEX_STORE_ENABLE=NO
 
       - name: Package
         run: |
@@ -125,12 +120,3 @@ jobs:
           path: dist/*
           if-no-files-found: error
           retention-days: 14
-
-      - name: Upload build log
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: xcodebuild-log-${{ env.SDK }}-${{ env.CONFIGURATION }}
-          path: xcodebuild.log
-          if-no-files-found: ignore
-          retention-days: 7
