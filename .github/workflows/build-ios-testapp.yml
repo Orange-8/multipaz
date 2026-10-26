@@ -97,9 +97,23 @@ jobs:
           # Free the daemon's memory before Xcode starts its own Gradle.
           ./gradlew --stop
 
-      # The "Compile Kotlin Framework" phase re-runs Gradle; its nested xcodebuild inherits TOOLCHAINS, so pin it.
+      # In Xcode's "Compile Kotlin Framework" phase the nested SwiftBridge xcodebuild crashes and re-runs anyway; skip it there.
       - name: Build
         run: |
+          mkdir -p ~/.gradle/init.d
+          cat > ~/.gradle/init.d/skip-swiftbridge-in-xcode.gradle <<'EOF'
+          if (System.getenv('SDK_NAME')) {
+              allprojects {
+                  if (path == ':multipaz:SwiftBridge') {
+                      tasks.configureEach {
+                          if (name in ['buildIphoneos', 'buildIphonesimulator']) {
+                              enabled = false
+                          }
+                      }
+                  }
+              }
+          }
+          EOF
           case "$SDK" in
             iphoneos) destination="generic/platform=iOS" ;;
             *) destination="generic/platform=iOS Simulator" ;;
@@ -112,7 +126,6 @@ jobs:
             -destination "$destination" \
             -derivedDataPath build/xcode-derived-data \
             ARCHS=arm64 \
-            TOOLCHAINS=com.apple.dt.toolchain.XcodeDefault \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
             COMPILER_INDEX_STORE_ENABLE=NO \
             2>&1 | tee xcodebuild.log
@@ -154,6 +167,7 @@ jobs:
             echo "::$1 title=$2::$(printf '%s' "$3" | perl -0pe 's/%/%25/g; s/\r/%0D/g; s/\n/%0A/g')"
           }
           annotate notice Environment "$(xcodebuild -version | tr '\n' ' ') $(java -version 2>&1 | head -n 1) RAM=$(( $(sysctl -n hw.memsize) / 1073741824 ))GB free=$(df -h / | awk 'NR==2 {print $4}')"
+          annotate notice "Git status" "$(git status --porcelain | head -n 30)"
           if [ -f xcodebuild.log ]; then log=xcodebuild.log; elif [ -f gradle.log ]; then log=gradle.log; else exit 0; fi
           annotate error Errors "$(grep -E '^e: |error:|FAILURE:|BUILD FAILED|Execution failed|Caused by|OutOfMemory|disappeared' "$log" | cut -c1-300 | awk '!seen[$0]++' | head -n 25 | head -c 3800)"
           annotate error Gradle "$(sed -n '/\* What went wrong:/,/\* Try:/p' "$log" | cut -c1-300 | head -n 25 | head -c 3800)"
